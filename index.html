@@ -1,0 +1,209 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Pamplona Environmental Reporting</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
+<link rel="manifest" href="manifest.json">
+<meta name="theme-color" content="#4CAF50">
+<style>
+  html, body { height: 100%; margin: 0; padding: 0; font-family: Arial, sans-serif; }
+  #map { height: calc(100vh - 140px); width: 100%; }
+  #reportForm { margin: 10px; display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
+  #reportForm input, #reportForm select { padding: 6px; flex: 1 1 150px; }
+  #reportForm button { padding: 6px 12px; }
+  @media (max-width: 600px) {
+    #reportForm { flex-direction: column; }
+    #reportForm input, #reportForm select, #reportForm button { width: 100%; }
+  }
+  /* Install App Button */
+  #installBtn {
+    display: none;
+    position: fixed;
+    bottom: 20px;
+    left: 50%;
+    transform: translateX(-50%);
+    padding: 10px 20px;
+    background-color: #4CAF50;
+    color: #fff;
+    border: none;
+    border-radius: 5px;
+    z-index: 1000;
+    font-size: 16px;
+  }
+</style>
+</head>
+<body>
+
+<h1 style="text-align:center;">Pamplona Environmental Reporting</h1>
+
+<div id="reportForm">
+  <input type="text" id="incidentType" placeholder="Incident Type (Trash, Water Pollution)">
+  <input type="text" id="incidentDesc" placeholder="Description of the incident">
+  <button id="reportBtn">Report Incident</button>
+  <select id="filterType">
+    <option value="all">All Types</option>
+  </select>
+  <label><input type="checkbox" id="toggleSim" checked> Show Simulated Reports</label>
+</div>
+
+<div id="map"></div>
+
+<button id="installBtn">Install App</button>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="https://unpkg.com/leaflet-pip/leaflet-pip.min.js"></script>
+<script>
+// --- Initialize Map ---
+var map = L.map('map').setView([42.81, -1.64], 13);
+L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    maxZoom: 19,
+    attribution: '&copy; OpenStreetMap'
+}).addTo(map);
+
+let marker, circle, zoomed = false;
+let reports = JSON.parse(localStorage.getItem('reports') || "[]");
+let markersLayer = L.layerGroup().addTo(map);
+let userLat, userLng;
+
+// --- Load Pamplona Polygon ---
+fetch('pamplona_boundary.geojson')
+  .then(res => res.json())
+  .then(geojson => {
+      window.pamplonaBoundaryLayer = L.geoJSON(geojson, {
+          style: { color: 'red', fillColor: '#f03', fillOpacity: 0.2 }
+      }).addTo(map);
+
+      map.fitBounds(pamplonaBoundaryLayer.getBounds());
+
+      if (navigator.geolocation) {
+        navigator.geolocation.watchPosition(success, error, { enableHighAccuracy: true });
+      } else {
+        alert("Geolocation is not supported by your browser");
+      }
+
+      renderReports();
+      populateFilterOptions();
+  })
+  .catch(err => console.error("Failed to load polygon GeoJSON:", err));
+
+// --- Utility Functions ---
+function isInsidePolygon(lat, lng) {
+    if (!pamplonaBoundaryLayer) return false;
+    return leafletPip.pointInLayer([lng, lat], pamplonaBoundaryLayer).length > 0;
+}
+
+// --- Geolocation ---
+function success(position) {
+    userLat = position.coords.latitude;
+    userLng = position.coords.longitude;
+
+    if (marker) marker.setLatLng([userLat, userLng]);
+    else marker = L.circleMarker([userLat, userLng], { color: 'green', radius: 8 }).addTo(map);
+
+    if (circle) circle.setLatLng([userLat, userLng]).setRadius(position.coords.accuracy);
+    else circle = L.circle([userLat, userLng], { radius: position.coords.accuracy }).addTo(map);
+
+    const inside = isInsidePolygon(userLat, userLng);
+    marker.setStyle({ color: inside ? 'green' : 'orange' });
+    marker.bindPopup(`You are ${inside ? 'INSIDE' : 'OUTSIDE'} Pamplona`).openPopup();
+
+    if (!zoomed) {
+        zoomed = true;
+        map.fitBounds(pamplonaBoundaryLayer.getBounds());
+    }
+}
+function error(err) {
+    if (err.code === 1) alert("Please allow geolocation access");
+    else alert("Cannot get current location");
+}
+
+// --- Add New Report ---
+document.getElementById('reportBtn').addEventListener('click', () => {
+    if (userLat === undefined || userLng === undefined) { alert("Waiting for your location..."); return; }
+
+    const type = document.getElementById('incidentType').value.trim() || "Unknown";
+    const desc = document.getElementById('incidentDesc').value.trim() || "";
+    const inside = isInsidePolygon(userLat, userLng);
+    const reportData = { lat: userLat, lng: userLng, type, desc, inside, simulated: false };
+
+    reports.push(reportData);
+    localStorage.setItem('reports', JSON.stringify(reports));
+    addMarker(reportData);
+    updateFilterOptions(type);
+
+    document.getElementById('incidentType').value = "";
+    document.getElementById('incidentDesc').value = "";
+});
+
+// --- Marker Functions ---
+function addMarker(report) {
+    const color = report.inside ? 'blue' : 'red';
+    const m = L.circleMarker([report.lat, report.lng], { color, radius: 6 });
+    m.bindPopup(`${report.type}<br>${report.desc}<br>${report.inside ? 'INSIDE' : 'OUTSIDE'} Pamplona`);
+    m.simulated = report.simulated;
+    markersLayer.addLayer(m);
+}
+function renderReports() {
+    markersLayer.clearLayers();
+    const showSim = document.getElementById('toggleSim').checked;
+    const filter = document.getElementById('filterType').value;
+    reports.forEach(r => {
+        if ((!r.simulated || showSim) && (filter === 'all' || r.type === filter)) addMarker(r);
+    });
+}
+function populateFilterOptions() {
+    const filterSelect = document.getElementById('filterType');
+    const types = [...new Set(reports.map(r => r.type))];
+    filterSelect.innerHTML = '<option value="all">All Types</option>';
+    types.forEach(t => { const opt = document.createElement('option'); opt.value=t; opt.textContent=t; filterSelect.appendChild(opt); });
+}
+function updateFilterOptions(newType) {
+    const filterSelect = document.getElementById('filterType');
+    if (![...filterSelect.options].some(o => o.value === newType)) {
+        const opt = document.createElement('option'); opt.value=newType; opt.textContent=newType; filterSelect.appendChild(opt);
+    }
+}
+
+// --- Filter & Toggle Events ---
+document.getElementById('filterType').addEventListener('change', renderReports);
+document.getElementById('toggleSim').addEventListener('change', renderReports);
+
+// --- Simulated Reports ---
+for (let i=0;i<5;i++){
+    const lat=42.81+(Math.random()-0.5)*0.05;
+    const lng=-1.64+(Math.random()-0.5)*0.05;
+    const inside=isInsidePolygon(lat,lng);
+    reports.push({ lat, lng, type:`Simulated ${i+1}`, desc:"Practice", inside, simulated:true });
+}
+localStorage.setItem('reports', JSON.stringify(reports));
+
+// --- Service Worker Registration ---
+if ('serviceWorker' in navigator) {
+    window.addEventListener('load', ()=>{
+        navigator.serviceWorker.register('sw.js')
+        .then(reg=>console.log('Service Worker registered:', reg))
+        .catch(err=>console.error('Service Worker failed:', err));
+    });
+}
+
+// --- Mobile Install Button ---
+let deferredPrompt;
+window.addEventListener('beforeinstallprompt', (e)=>{
+    e.preventDefault();
+    deferredPrompt = e;
+    const btn = document.getElementById('installBtn');
+    btn.style.display = 'block';
+
+    btn.addEventListener('click', async ()=>{
+        btn.style.display = 'none';
+        deferredPrompt.prompt();
+        const choiceResult = await deferredPrompt.userChoice;
+        console.log('User choice:', choiceResult.outcome);
+        deferredPrompt = null;
+    });
+});
+</script>
+</body>
+</html>
